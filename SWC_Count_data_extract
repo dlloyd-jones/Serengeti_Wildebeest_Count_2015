@@ -1,5 +1,5 @@
  
-# Serengeti Wildebeest Count 2015
+# Serengeti Wildebeest Count 
 # Count data extraction. Input: csv. file downloaded from the Zooniverse website. Output: csv. file with 
 # the same number of rows as full images taken in the original analysis. 
 # Version 1.2. Prepared by David Lloyd-Jones, using some code (json extraction) prepared by Ali Swainson. 
