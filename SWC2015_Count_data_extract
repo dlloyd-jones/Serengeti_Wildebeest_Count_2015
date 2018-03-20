@@ -1,0 +1,178 @@
+ 
+# Serengeti Wildebeest Count 2015
+# Count data extraction. Input: csv. file downloaded from the Zooniverse website. Output: csv. file with 
+# the same number of rows as full images taken in the original analysis. 
+# Version 1.2. Prepared by David Lloyd-Jones, using some code (json extraction) prepared by Ali Swainson. 
+# First fully run August 2017.
+
+# Load packages:
+  library(tidyjson)
+  library(magrittr)
+  library(jsonlite)
+  library(dplyr)
+  library(stringr)
+  library(tidyr)
+
+# Add the data:
+  wilde <- (swc_data_30May2017) 
+  wilde <- wilde[-(132069:132071),] # remove a single row with scrambled data
+  wilde <- wilde[, c(1:14)] # remove unwanted columns
+  
+# New column for the filenames, then use SUBSTRING MATCH to get the file names listed:
+  wilde["new_id"] <- NA
+  new_id <-str_match_all(wilde$subject_data, "SWC........")
+  wilde$new_id<-new_id
+  rm(new_id)
+  
+#Add a new column with just the name of the full image (i.e., untiled image):
+  wilde["SWC_image"] <- NA
+  SWC_image <-str_match_all(wilde$subject_data, "SWC....")
+  wilde$SWC_image <-SWC_image
+  rm(SWC_image)
+
+# New column for the tile name (this is also the tile location within an image):
+  wilde["tile_loc"] <- NA
+  tile_loc<-str_match_all(wilde$subject_data, "...(?=.jpg)")
+  wilde$tile_loc<-tile_loc
+  rm(tile_loc)
+
+# Check WORKFLOW for data flattening function
+  fun_check_workflow <- function(data){
+    data %>% group_by(workflow_id, workflow_version) %>% 
+      summarise(date = max(created_at), count = n()) %>% 
+      print  
+  }
+
+# Use jsonlite to flatten the data:
+  basic_flattening <- function(jdata) {
+    out <- list() #create list 
+  
+    for (i in 1:dim(jdata)[1]) {
+      classification_id  <- jdata$classification_id[i] #all the classification data has this format
+      subject_id <- jdata$subject_ids[i]
+      split_anno <- jsonlite::fromJSON(txt = jdata$annotations[i], simplifyDataFrame = T) 
+      out[[i]] <- cbind(classification_id, subject_id, split_anno)
+   }
+  
+    do.call(what = rbind, args = out)   
+  }
+  
+# First check function on the data and then filter data so that all data used was produced using the same zooniverse workflow. 
+# 2015 main count workflow version was 45.126
+  
+  fun_check_workflow(wilde)
+  data <- wilde %>% filter(., workflow_id == 78, workflow_version == 45.126)
+  
+# View json data:
+  data$annotations[1] %>% prettify
+  
+  
+# View data structure - anything with zero length "value" field is dropped:
+    data$annotations %>% as.tbl_json %>% 
+    gather_array() %>%
+    spread_values(task = jstring("task"), tasklabel = (jstring("task_label"))) %>%
+    enter_object("value") %>%
+    gather_array() %>%
+    gather_keys() %>% 
+    json_lengths() %>%
+    append_values_string() %>% head %>% View
+  
+# Grab the top-level info for all classifications. This produces one row per classification per subject; 
+  all_submissions <- data %>% 
+    select(., subject_ids, classification_id, user_name, workflow_id, workflow_version, created_at, annotations, new_id, SWC_image) %>%
+    as.tbl_json(json.column = "annotations") %>%
+    gather_array(column.name = "task_index") %>%
+    spread_values(task = jstring("task"), task_label = jstring("task_label")) %>%
+    gather_keys() %>%
+    json_lengths(column.name = "total_marks") %>% 
+    filter(., key == "value") 
+  
+# Produce one row per mark per classification per subject, but only keep classifications with > 0 marks:
+  flattened <- data %>% 
+    select(., subject_ids, classification_id, user_name, workflow_id, workflow_version, created_at, annotations) %>%
+    as.tbl_json(json.column = "annotations") %>%
+    gather_array(column.name = "task_index") %>%
+    spread_values(task = jstring("task"), task_label = (jstring("task_label"))) %>%
+    enter_object("value") %>%
+    gather_array(column.name = "mark_index") %>% #don't gather keys, whole point is that you are spreading out the keys.
+    spread_values(tool_label = jstring("tool_label"), xcoord = jnumber("x"), ycoord = jnumber("y"), tool = jstring("tool"))
+  
+# Check that captures all the data and equals original total classifications.
+  original_class <- n_distinct(data$classification_id)
+  empty_class <- n_distinct(filter(all_submissions, total_marks == 0)$classification_id)
+  nonempty_class <- n_distinct(flattened$classification_id)
+  ifelse(empty_class + nonempty_class == original_class, "yes", "no")
+  
+# Recombine datasets: all_submissions (has one record per classification per subject) with flattened 
+# (has one record per mark per classification, but only if the counter > 0).
+  combined <- left_join(all_submissions, flattened) 
+  count_data <- combined %>%
+    mutate(., task_label = str_trunc(task_label, width = 25)) %>%
+    select(., -task_index, -key)
+
+# Add a list of tile identifiers and full names to this dataframe by subsetting WILDE and then joining.
+  wilde_subset <- subset(wilde, select = c(subject_ids,tile_loc))
+  count_data$tile_loc <- wilde_subset[match(count_data$subject_ids, wilde_subset$subject_ids),2]
+  names(count_data)[names(count_data) == 'tile_loc.tile_loc'] <- 'tile_loc'
+ 
+# Classify every point as either an edge point (0.5 of a wildebeest) or not.  
+# Edge points are of wildebeest split across parts of the frame. Each image tile has a different number of INTERNAL edges. 
+# Probably could use a wrapper for these nested ifelses.  
+  attach(count_data)
+  count_data$edge <- ifelse(count_data$tile_loc == '1_1' & xcoord > 1810 | ycoord < 30,'0.5',
+                            ifelse(count_data$tile_loc == '1_2' & xcoord > 1810 | ycoord < 30 | ycoord > 1605, '0.5',
+                                   ifelse(count_data$tile_loc == '1_3' & ycoord > 1605 | xcoord > 1810,'0.5',
+                                          ifelse(count_data$tile_loc == '2_1' & xcoord < 30 | ycoord < 30 | xcoord > 1810,'0.5',
+                                                 ifelse(count_data$tile_loc == '2_2' & xcoord < 30 | xcoord > 1810 | ycoord < 30 | ycoord > 1605, '0.5',
+                                                        ifelse(count_data$tile_loc == '2_3' & xcoord < 30 | ycoord > 1605 | xcoord > 1810,'0.5',
+                                                               ifelse(count_data$tile_loc == '3_1' & ycoord < 30 | xcoord > 1810 | xcoord < 30, '0.5',
+                                                                      ifelse(count_data$tile_loc == '3_2' & xcoord > 1810 | ycoord < 30 | ycoord > 1605 | ycoord < 30, '0.5',
+                                                                             ifelse(count_data$tile_loc == '3_3' & xcoord < 30 | ycoord > 1605 | xcoord > 1810,'0.5',
+                                                                                    ifelse(count_data$tile_loc == '4_1' & xcoord < 30 | ycoord < 30, '0.5',
+                                                                                           ifelse(count_data$tile_loc == '4_2' & xcoord < 30 | ycoord > 1605 | ycoord < 30, '0.5',
+                                                                                                  ifelse(count_data$tile_loc == '4_3' & xcoord < 30 | ycoord > 1605,'0.5','1'))))))))))))
+  
+  
+# Change character column into numeric, replace NAs with zeros and get sum of points from each counter for each image.
+  count_data$edge <- as.numeric(as.character(count_data$edge))
+  count_data$edge[is.na(count_data$edge)] <- 0
+  total_count <- aggregate(edge ~ classification_id, count_data, sum)
+  
+# Merge the data back into count_data dataframe:
+  count_data <-merge(count_data, total_count, by="classification_id")
+  
+# Unlist and sort by Subject_ID:
+  count_data <- as.data.frame(lapply(count_data, unlist))
+  count_data <- count_data[order(count_data$new_id), ] 
+  
+# Remove duplicates of each classifcation per counter
+  count_data <- count_data[!duplicated( count_data[c(1,7)] ), ]
+  
+# OPTIONAL STEP: Remove the two highest and lowest counts per tile.  
+  library(dplyr)
+  count_data <- count_data %>% group_by(new_id) %>% arrange(desc(edge.y)) %>% slice(2:11)
+  
+# Aggregate (get mean) of the count from different counter using 'new_id'. 
+# This is the average count for each image based on number of counts (11 in full dataset) per image. 
+  wilde.avg <- aggregate(edge.y ~ new_id, count_data, mean)
+  
+# Rename a column in wilde.avg dataframe and merge the average count data back into the main count_data dataset.
+  names(wilde.avg)[names(wilde.avg) == 'edge.y'] <- 'count.avg'
+  count_data <-merge(count_data, wilde.avg, by="new_id")
+  
+# Remove duplicate rows - now that we have an average we just need one row for each image per counter. 
+  count_data <- count_data[!duplicated(count_data$subject_ids),]
+  
+# Sum all the tiles (n = 12) for each image
+  wilde.sum <- aggregate(count.avg ~ SWC_image, count_data, sum)
+  
+# Merge sums for each image into wilde dataframe:
+  names(wilde.sum)[names(wilde.sum) == 'count.avg'] <- 'count.sum'
+  wilde_final <-merge(count_data, wilde.sum, by="SWC_image", all = TRUE)
+  
+# Delete replicates. Now dataframe has same number of rows as images. 
+  wilde_final = wilde_final[!duplicated(wilde_final$SWC_image),]
+  sum(wilde_final$count.sum)
+  
+# Save final data for analysis
+  write.csv(wilde_final,'swc_filteredcitizen.csv')
