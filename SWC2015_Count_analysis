@@ -1,0 +1,61 @@
+# Serengeti Wildebeest Count analysis 2015
+
+# Load packages:
+  library(tidyjson)
+  library(magrittr)
+  library(jsonlite)
+  library(dplyr)
+  library(stringr)
+  library(tidyr)
+
+# First combine the 3 datasets:  1) swc_zooniversecount_final, 2)swc_altitude_strata, 3)swc_tracklog_waypoints
+
+# swc_zooniversecount_final has the final count values by the citizen counters
+# swc_altitude_strata has the altitude of each frame and the strata it belongs to
+# swc_tracklog_waypoints has the waypoints and time of each photograph. 
+# Merge these 3 dataframes.
+  
+  
+# Add data
+  count <-(swc_zooniversecount_final)
+  waypoints <- (swc_tracklog_waypoints)
+  altitude <- (swc_altitude_strata)
+  count$X5<- NULL
+  count$X6<- NULL
+  count$X7<- NULL
+  count$X8<- NULL
+  
+# Merge altitude and count
+  alldata <-left_join(altitude, count, by = 'SWC_image')
+  View(alldata)
+
+# Replace NAs with 0s
+  alldata$gold[is.na(alldata$gold)] <- 0
+  alldata$count[is.na(alldata$count)] <- 0
+  alldata$filtered[is.na(alldata$filtered)] <- 0
+
+# Merge waypoints to alldata using nearest value of time
+  
+  library(data.table)
+  names(alldata)[names(alldata) == 'Time_UTC'] <- 'time'
+  alldata <- data.table(alldata)
+  waypoints <- data.table(waypoints)
+  setkey(alldata, date, time)
+  setkey(waypoints, date, time )
+  combined <- waypoints[ alldata, roll = "nearest" ]
+  
+  
+# Area based on altitude
+  data <-combined
+  data$alt_meters<-data$radar_alt*0.3048
+  data$GSD <- ((data$alt_meters*4.88)/35)/10
+  data$width <-(data$GSD*7360)/100
+  data$length <-(data$GSD*4912)/100
+  data$area <-(data$width*data$length)/1000000
+  
+
+#Sum data by strata:
+  aggregate(data$gold, by=list(data=data$strata), FUN=sum)
+  aggregate(data$filtered, by=list(data=data$strata), FUN=sum)
+  aggregate(data$count, by=list(data=data$strata), FUN=sum)
+  aggregate(data$area, by=list(data=data$strata), FUN=sum)
