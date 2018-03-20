@@ -1,4 +1,4 @@
-# Serengeti Wildebeest Count analysis 2015
+# Serengeti Wildebeest Count analysis 
 
 # Load packages:
   library(tidyjson)
